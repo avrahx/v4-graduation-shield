@@ -15,12 +15,11 @@ library HookMiner {
     /// @param constructorArgs The ABI-encoded constructor arguments
     /// @return hookAddress The mined hook address matching the required flags
     /// @return salt The salt that produces hookAddress
-    function find(
-        address deployer,
-        uint160 flags,
-        bytes memory creationCode,
-        bytes memory constructorArgs
-    ) internal pure returns (address hookAddress, bytes32 salt) {
+    function find(address deployer, uint160 flags, bytes memory creationCode, bytes memory constructorArgs)
+        internal
+        pure
+        returns (address hookAddress, bytes32 salt)
+    {
         bytes32 initCodeHash = keccak256(abi.encodePacked(creationCode, constructorArgs));
 
         // The flags bitmask cleanly isolates the required 14-bit mask (Hooks.ALL_HOOK_MASK)
@@ -43,24 +42,7 @@ library HookMiner {
     /// @param salt The 32-byte salt
     /// @param initCodeHash The keccak256 hash of the contract creation code and constructor arguments
     /// @return The calculated CREATE2 address
-    function computeAddress(
-        address deployer,
-        bytes32 salt,
-        bytes32 initCodeHash
-    ) internal pure returns (address) {
-        return address(
-            uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(
-                            bytes1(0xff),
-                            deployer,
-                            salt,
-                            initCodeHash
-                        )
-                    )
-                )
-            )
-        );
+    function computeAddress(address deployer, bytes32 salt, bytes32 initCodeHash) internal pure returns (address) {
+        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), deployer, salt, initCodeHash)))));
     }
 }

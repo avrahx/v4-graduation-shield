@@ -152,12 +152,11 @@ abstract contract BaseHook is IHooks {
         return _beforeSwap(sender, key, params, hookData);
     }
 
-    function _beforeSwap(
-        address,
-        PoolKey calldata,
-        IPoolManager.SwapParams calldata,
-        bytes calldata
-    ) internal virtual returns (bytes4, BeforeSwapDelta, uint24) {
+    function _beforeSwap(address, PoolKey calldata, IPoolManager.SwapParams calldata, bytes calldata)
+        internal
+        virtual
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
         revert HookNotImplemented();
     }
 
@@ -171,13 +170,11 @@ abstract contract BaseHook is IHooks {
         return _afterSwap(sender, key, params, delta, hookData);
     }
 
-    function _afterSwap(
-        address,
-        PoolKey calldata,
-        IPoolManager.SwapParams calldata,
-        BalanceDelta,
-        bytes calldata
-    ) internal virtual returns (bytes4, int128) {
+    function _afterSwap(address, PoolKey calldata, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
+        internal
+        virtual
+        returns (bytes4, int128)
+    {
         revert HookNotImplemented();
     }
 

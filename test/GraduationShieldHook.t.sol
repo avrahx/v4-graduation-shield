@@ -48,27 +48,14 @@ contract GraduationShieldHookTest is Test, Deployers {
         // BEFORE_INITIALIZE_FLAG (1 << 13) = 0x2000
         // BEFORE_SWAP_FLAG (1 << 7)       = 0x0080
         // Total bitmask = 0x2080
-        uint160 flags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG |
-            Hooks.BEFORE_SWAP_FLAG
-        );
+        uint160 flags = uint160(Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG);
         address hookAddress = address(flags);
 
-        deployCodeTo(
-            "GraduationShieldHook.sol:GraduationShieldHook",
-            abi.encode(manager),
-            hookAddress
-        );
+        deployCodeTo("GraduationShieldHook.sol:GraduationShieldHook", abi.encode(manager), hookAddress);
         hook = GraduationShieldHook(hookAddress);
 
         // 4. Initialize pool with dynamic fee flag
-        (poolKey, poolId) = initPool(
-            currency0,
-            currency1,
-            hook,
-            LPFeeLibrary.DYNAMIC_FEE_FLAG,
-            SQRT_PRICE_1_1
-        );
+        (poolKey, poolId) = initPool(currency0, currency1, hook, LPFeeLibrary.DYNAMIC_FEE_FLAG, SQRT_PRICE_1_1);
 
         // 5. Add full-range liquidity
         int24 minTick = TickMath.minUsableTick(60);
@@ -105,21 +92,13 @@ contract GraduationShieldHookTest is Test, Deployers {
         assertFalse(permissions.afterSwapReturnDelta, "afterSwapReturnDelta should be false");
 
         // Verify address satisfies ALL_HOOK_MASK strictly
-        assertEq(
-            uint160(address(hook)) & Hooks.ALL_HOOK_MASK,
-            0x2080,
-            "Hook address bitmask mismatch"
-        );
+        assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, 0x2080, "Hook address bitmask mismatch");
     }
 
     // --- Test 2: Pool Initialization ---
 
     function test_PoolInitialization() public view {
-        (
-            uint256 graduationTimestamp,
-            Currency token,
-            bool active
-        ) = hook.poolShields(poolId);
+        (uint256 graduationTimestamp, Currency token, bool active) = hook.poolShields(poolId);
 
         assertTrue(active, "Pool shield must be active");
         assertEq(Currency.unwrap(token), Currency.unwrap(launchpadToken), "Launchpad token must be currency0");
@@ -191,9 +170,7 @@ contract GraduationShieldHookTest is Test, Deployers {
         BalanceDelta delta = swapRouter.swap(
             poolKey,
             IPoolManager.SwapParams({
-                zeroForOne: false,
-                amountSpecified: amountToBuy,
-                sqrtPriceLimitX96: MAX_PRICE_LIMIT
+                zeroForOne: false, amountSpecified: amountToBuy, sqrtPriceLimitX96: MAX_PRICE_LIMIT
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             ZERO_BYTES
@@ -211,9 +188,7 @@ contract GraduationShieldHookTest is Test, Deployers {
         BalanceDelta delta = swapRouter.swap(
             poolKey,
             IPoolManager.SwapParams({
-                zeroForOne: true,
-                amountSpecified: sellAmount,
-                sqrtPriceLimitX96: MIN_PRICE_LIMIT
+                zeroForOne: true, amountSpecified: sellAmount, sqrtPriceLimitX96: MIN_PRICE_LIMIT
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             ZERO_BYTES
@@ -233,9 +208,7 @@ contract GraduationShieldHookTest is Test, Deployers {
         BalanceDelta delta = swapRouter.swap(
             poolKey,
             IPoolManager.SwapParams({
-                zeroForOne: true,
-                amountSpecified: sellAmount,
-                sqrtPriceLimitX96: MIN_PRICE_LIMIT
+                zeroForOne: true, amountSpecified: sellAmount, sqrtPriceLimitX96: MIN_PRICE_LIMIT
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
             ZERO_BYTES

@@ -24,9 +24,9 @@ contract GraduationShieldHook is BaseHook {
     error TokenOrderMismatch();
 
     // --- State & Constants ---
-    uint24 public constant BASE_FEE = 3000;          // 0.30%
+    uint24 public constant BASE_FEE = 3000; // 0.30%
     uint24 public constant MAX_PENALTY_FEE = 150000; // 15.00%
-    uint256 public constant DECAY_WINDOW = 7200;    // 2 Hours in seconds
+    uint256 public constant DECAY_WINDOW = 7200; // 2 Hours in seconds
 
     struct ShieldParams {
         uint256 graduationTimestamp;
@@ -61,33 +61,26 @@ contract GraduationShieldHook is BaseHook {
     }
 
     /// @notice Pool must be initialized with LPFeeLibrary.DYNAMIC_FEE_FLAG
-    function _beforeInitialize(
-        address,
-        PoolKey calldata key,
-        uint160
-    ) internal override returns (bytes4) {
+    function _beforeInitialize(address, PoolKey calldata key, uint160) internal override returns (bytes4) {
         if (!key.fee.isDynamicFee()) revert PoolNotDynamicFee();
 
         PoolId poolId = key.toId();
         if (poolShields[poolId].active) revert PoolAlreadyInitialized();
 
         // Designate currency0 as launchpad token by convention, or set dynamically
-        poolShields[poolId] = ShieldParams({
-            graduationTimestamp: block.timestamp,
-            launchpadToken: key.currency0,
-            active: true
-        });
+        poolShields[poolId] =
+            ShieldParams({graduationTimestamp: block.timestamp, launchpadToken: key.currency0, active: true});
 
         return this.beforeInitialize.selector;
     }
 
     /// @notice Intercepts swaps, computes direction, and overrides pool LP fee
-    function _beforeSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata params,
-        bytes calldata
-    ) internal view override returns (bytes4, BeforeSwapDelta, uint24) {
+    function _beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata params, bytes calldata)
+        internal
+        view
+        override
+        returns (bytes4, BeforeSwapDelta, uint24)
+    {
         PoolId poolId = key.toId();
         ShieldParams memory shield = poolShields[poolId];
         if (!shield.active) revert PoolNotShielded();
@@ -95,9 +88,7 @@ contract GraduationShieldHook is BaseHook {
         // Determine trade direction:
         // zeroForOne = true  -> Selling currency0 for currency1
         // zeroForOne = false -> Selling currency1 for currency0
-        bool isSellingLaunchpadToken = (shield.launchpadToken == key.currency0) 
-            ? params.zeroForOne 
-            : !params.zeroForOne;
+        bool isSellingLaunchpadToken = (shield.launchpadToken == key.currency0) ? params.zeroForOne : !params.zeroForOne;
 
         uint24 fee = calculateDynamicFee(shield.graduationTimestamp, isSellingLaunchpadToken);
 
@@ -108,10 +99,7 @@ contract GraduationShieldHook is BaseHook {
     }
 
     /// @notice Computes linear decay fee for sells; returns base fee for buys or post-window trades
-    function calculateDynamicFee(
-        uint256 graduationTime,
-        bool isSell
-    ) public view returns (uint24) {
+    function calculateDynamicFee(uint256 graduationTime, bool isSell) public view returns (uint24) {
         if (!isSell) {
             return BASE_FEE;
         }
