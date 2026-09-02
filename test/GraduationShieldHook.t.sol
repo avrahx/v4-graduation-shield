@@ -20,7 +20,7 @@ import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 
 import {GraduationShieldHook} from "../src/GraduationShieldHook.sol";
 
-contract GraduationShieldHookTest is Test, Deployers {
+contract GraduationShieldHookTest is Deployers {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
