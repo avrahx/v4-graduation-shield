@@ -1,153 +1,112 @@
-# GraduationShieldHook: Dynamic Liquidity Defense for Uniswap v4
+# Uniswap v4 Graduation Shield Hook (`v4-graduation-shield`)
 
-> A production-grade Uniswap v4 Hook implementing dynamic time-decay exit fees on sells with dynamic LP fee override via `LPFeeLibrary.OVERRIDE_FEE_FLAG`.
+[![Foundry](https://img.shields.io/badge/Foundry-passing-brightgreen)](https://getfoundry.sh/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Solidity](https://img.shields.io/badge/Solidity-0.8.26-blue)](https://soliditylang.org/)
+[![Uniswap v4](https://img.shields.io/badge/Uniswap-v4--Core-pink)](https://github.com/uniswap/v4-core)
 
----
-
-## Executive Summary
-
-When token launchpads (e.g. pump.fun or bonding-curve protocols) transition from an internal curve to an Automated Market Maker (AMM) pool, the pool faces an asymmetric structural risk known as the **Graduation Cliff**. Early discount buyers, having acquired large positions at steep discounts on the bonding curve, are incentivized to immediately exit their positions upon pool launch. This drains quote reserves (ETH/USDC), crashes market depth, and imposes severe impermanent loss on initial liquidity providers.
-
-`GraduationShieldHook` is an institutional-grade defense mechanism designed to mitigate this dynamic by:
-1. Imposing a temporary, linearly decaying exit fee on sells of the graduated asset (15.00% decaying to 0.30% over a configurable window of 2 hours / 7,200 seconds).
-2. Maintaining a standard 0.30% fee on all buys throughout the entire lifecycle.
-3. Overriding the pool's LP fee dynamically via `LPFeeLibrary.OVERRIDE_FEE_FLAG` inside `beforeSwap`.
-4. Enforcing that pools must initialize with `LPFeeLibrary.DYNAMIC_FEE_FLAG` during `beforeInitialize`.
-5. Implementing clean address bitmask verification via `Hooks.validateHookPermissions`.
+A production-ready Uniswap v4 Hook that prevents post-migration liquidity depletion on retail launchpads (e.g., Robinhood Chain, Pons Family, Pump-style bonding curves) through asymmetric directional fee discrimination and mathematical time-decay defense.
 
 ---
 
-## Mechanism Design & Mathematical Formulation
+## The Problem: The "Graduation Cliff"
 
-### 1. Linear Decay Trajectory
+When a token completes its bonding-curve phase and migrates into an open Automated Market Maker (AMM), it enters an environment with static fee tiers. Early discount buyers and front-running snipers typically extract liquidity within the first few blocks:
 
-The exit fee $F_{\text{sell}}(t)$ decays linearly from an initial penalty $F_{\text{initial}}$ to a baseline pool fee $F_{\text{base}}$ across a configurable duration $T_{\text{decay}}$:
+```text
+[Bonding Curve Phase] --------> [Graduation Event] --------> [Open AMM Phase]
 
-$$\Delta t = \min(\max(0, \text{block.timestamp} - t_{\text{graduation}}), T_{\text{decay}})$$
+Supply-dependent pricing      * 100% Reserves seeded       * Static 0.30% pool fee
+Zero sandwich MEV               into open AMM pool         * Sniper bots dump at 10x-50x
+Locked reserves                                            * Buy-side liquidity collapses
+                                                           +--> "THE GRADUATION CLIFF"
+```
 
-$$F_{\text{decay}}(\Delta t) = \frac{\Delta t \times (F_{\text{initial}} - F_{\text{base}})}{T_{\text{decay}}}$$
-
-$$F_{\text{sell}}(\Delta t) = F_{\text{initial}} - F_{\text{decay}}(\Delta t)$$
-
-Where fees are denominated in pips (hundredths of a basis point, $10^6 = 100\%$):
-- $F_{\text{initial}} = 150,000$ (15.00%)
-- $F_{\text{base}} = 3,000$ (0.30%)
-- $T_{\text{decay}} = 7,200\text{ seconds}$ (2 hours)
-
-### Fee Milestones
-
-| Timeline | Elapsed ($\Delta t$) | Duration Ratio | Sell Fee ($F_{\text{sell}}$) | Buy Fee ($F_{\text{buy}}$) |
-|---|---|---|---|---|
-| Graduation ($T_0$) | 0 seconds | 0.00% | 15.000% (150,000 pips) | 0.300% (3,000 pips) |
-| Checkpoint 1 | 30 minutes (1,800s) | 25.00% | 11.325% (113,250 pips) | 0.300% (3,000 pips) |
-| Midpoint ($T_{1/2}$) | 1 hour (3,600s) | 50.00% | 7.650% (76,500 pips) | 0.300% (3,000 pips) |
-| Checkpoint 3 | 1.5 hours (5,400s) | 75.00% | 3.975% (39,750 pips) | 0.300% (3,000 pips) |
-| Maturity ($T_{\text{decay}}$) | 2 hours (7,200s) | 100.00% | 0.300% (3,000 pips) | 0.300% (3,000 pips) |
-| Post-Maturity | > 2 hours | N/A | 0.300% (3,000 pips) | 0.300% (3,000 pips) |
+Because baseline AMM pools apply uniform fees across all trade directions and timestamps, early extractors can dump millions of tokens with virtually zero penalty, draining up to 90% of newly seeded ETH/USDC reserves.
 
 ---
 
-## Protocol Flow
+## The Solution: Directional Decay Defense
 
-```mermaid
-flowchart TD
-    InitReq([Pool Initialization Request]) --> CheckDynFee{Is Pool Dynamic Fee?}
-    CheckDynFee -->|No| RevertDyn[Revert: PoolNotDynamicFee]
-    CheckDynFee -->|Yes| RecordShield[Record graduationTimestamp & launchpadToken]
-    
-    SwapReq([Trader Swap Request]) --> DirectionCheck{Trade Direction}
-    DirectionCheck -->|Buy Graduated Token| BuyHandler[Apply Standard 0.30% Base Fee]
-    DirectionCheck -->|Sell Graduated Token| TimeEval[Evaluate Elapsed Time from Graduation]
-    
-    TimeEval --> DecayCheck{Window Active?}
-    DecayCheck -->|Elapsed >= 7200s| NormalSell[Apply Standard 0.30% Base Fee]
-    DecayCheck -->|Elapsed < 7200s| CliffSell[Compute Dynamic Fee 15% -> 0.30%]
-    
-    CliffSell --> OverrideFee[Apply OVERRIDE_FEE_FLAG]
-    NormalSell --> OverrideFee
-    BuyHandler --> OverrideFee
-    
-    OverrideFee --> SwapCore[PoolManager Swaps with Dynamic LP Fee]
-    SwapCore --> Finalize([Transaction Settled])
+`GraduationShieldHook` intercepts swaps inside Uniswap v4's `beforeSwap` lifecycle:
+
+1. **Trade Direction Discrimination:** 
+   * **Inflow (Buys):** Swappers purchasing the newly graduated token receive the standard baseline fee (0.30%) to promote organic order flow.
+   * **Outflow (Sells):** Early dumpers pay a steep initial penalty fee (15.00%) that linearly decays to baseline over a stabilization window ($T = 7,200\text{ s}$).
+
+2. **Mathematical Formulation:**
+
+* If $(t - t_{\text{grad}}) \ge T_{\text{window}}$:
+  $$\text{Fee}_{\text{sell}}(t) = \text{BASE\_FEE}$$
+
+* If $(t - t_{\text{grad}}) < T_{\text{window}}$:
+  $$\text{Fee}_{\text{sell}}(t) = \text{MAX\_FEE} - \left\lfloor \frac{(t - t_{\text{grad}}) \times (\text{MAX\_FEE} - \text{BASE\_FEE})}{T_{\text{window}}} \right\rfloor$$
+
+Where:
+* $\text{MAX\_FEE} = 150,000\text{ pips } (15.00\%)$
+* $\text{BASE\_FEE} = 3,000\text{ pips } (0.30\%)$
+* $T_{\text{window}} = 7,200\text{ seconds } (2\text{ Hours})$
+
+---
+
+## Architecture & Lifecycle Flow
+
+```text
+                 +----------------------------------------------+
+                 |          PoolManager.sol (Uniswap v4)        |
+                 +----------------------+-----------------------+
+                                        |
+                                        v
+                       1. beforeSwap Hook Callback
+                 +----------------------------------------------+
+                 |          GraduationShieldHook.sol            |
+                 |                                              |
+                 | 1. Identify trade direction (zeroForOne)     |
+                 | 2. Compute elapsed delta_t = now - t_grad    |
+                 | 3. If Buy: return BASE_FEE (0.30%)           |
+                 | 4. If Sell: compute decay fee (15% -> 0.3%)  |
+                 | 5. Return fee | LPFeeLibrary.OVERRIDE_FLAG   |
+                 +----------------------------------------------+
 ```
 
 ---
 
-## Hook Address Bitmask & CREATE2 Derivation
+## Contract Addresses & Bitmask Specification
 
-Uniswap v4 requires hook contracts to be deployed at an address whose lowest 14 bits match the permissions declared in `getHookPermissions()`.
+Uniswap v4 enforces hook permissions via the leading bits of the deployed hook address. `GraduationShieldHook` requires:
+* `Hooks.BEFORE_INITIALIZE_FLAG` (`1 << 13`)
+* `Hooks.BEFORE_SWAP_FLAG` (`1 << 7`)
 
-### Required Flags
-
-| Permission Flag | Bit Position | Hex Mask | Function |
-|---|---|---|---|
-| `BEFORE_INITIALIZE_FLAG` | Bit 13 (`1 << 13`) | `0x2000` | Verifies dynamic fee pool and registers shield configuration. |
-| `BEFORE_SWAP_FLAG` | Bit 7 (`1 << 7`) | `0x0080` | Intercepts swaps, computes direction, and overrides pool LP fee. |
-| **Combined Target Bitmask** | | **`0x2080`** | Validated in constructor via `Hooks.validateHookPermissions`. |
+The project includes an optimized `HookMiner.sol` library that brute-forces `CREATE2` salts until an address matches the target flag bitmask `(1 << 13) | (1 << 7)`.
 
 ---
 
-## Security & Verification
+## Getting Started
 
-### 1. Mandatory Dynamic Fee Pool Guard
-Pools must be initialized with `key.fee.isDynamicFee()`. Any attempt to initialize a static-fee pool with this hook reverts immediately with `PoolNotDynamicFee()`.
+### Prerequisites
+* [Foundry](https://getfoundry.sh/)
 
-### 2. Directional Trade Identification
-Trade direction is checked dynamically against `poolShields[poolId].launchpadToken`:
-- When `zeroForOne == true` and `shield.launchpadToken == key.currency0`, the user is selling the launchpad token for reserve tokens.
-- When `zeroForOne == false` and `shield.launchpadToken == key.currency1`, the user is selling the launchpad token for reserve tokens.
-- All other swaps are classified as buys or quote-side swaps and incur only standard base fees.
+### Installation
+```bash
+git clone https://github.com/avrahx/v4-graduation-shield.git
+cd v4-graduation-shield
+forge install
+```
 
-### 3. Permission Integrity
-The contract inherits `BaseHook` which calls `Hooks.validateHookPermissions(this, getHookPermissions())` in its constructor. If the deployed address does not strictly fulfill `0x2080`, the deployment reverts.
+### Build
+```bash
+forge build
+```
 
----
-
-## Verification & Test Suite
-
-The repository includes a comprehensive test suite in [`test/GraduationShieldHook.t.sol`](file:///C:/Users/micha/.gemini/antigravity-ide/scratch/v4-graduation-shield/test/GraduationShieldHook.t.sol):
-
-```shell
+### Run Tests
+```bash
 forge test -vvv
 ```
 
-### Test Suite Execution Summary
-
-```text
-Ran 7 tests for test/GraduationShieldHook.t.sol:GraduationShieldHookTest
-[PASS] test_BuySwapStandardFee() (gas: 135658)
-[PASS] test_CalculateDynamicFee_Trajectory() (gas: 19481)
-[PASS] test_Permissions() (gas: 10763)
-[PASS] test_PoolInitialization() (gas: 15154)
-[PASS] test_RevertIfPoolNotDynamicFee() (gas: 22419)
-[PASS] test_SellSwapCliffMaxFee() (gas: 141881)
-[PASS] test_SellSwapPostDecay() (gas: 144648)
-Suite result: ok. 7 passed; 0 failed; 0 skipped; finished in 1.89ms
-```
-
----
-
-## Salt Mining & Deployment Guide
-
-To deploy `GraduationShieldHook` using the CREATE2 deployment pattern:
-
-```shell
+### Deploy
+```bash
 forge script script/DeployShieldHook.s.sol
 ```
-
-### Deterministic Mining Output
-```text
-== Logs ==
-  Mining CREATE2 salt for deployer: 0x4e59b44847b379578588920cA78FbF26c0B4956C
-  Target flags bitmask: 0x2080
-  Found salt:
-  0x0000000000000000000000000000000000000000000000000000000000002019
-  Expected hook address: 0x2b552A9287443191a4733322068e8EE11714a080
-  Successfully deployed GraduationShieldHook at: 0x2b552A9287443191a4733322068e8EE11714a080
-```
-
-Bitmask verification:
-$$0\text{x2b552A9287443191a4733322068e8EE11714a080} \ \& \ 0\text{x3FFF} = 0\text{x2080}$$
 
 ---
 
