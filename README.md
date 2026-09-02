@@ -129,24 +129,25 @@ Suite result: ok. 7 passed; 0 failed; 0 skipped; finished in 1.89ms
 
 ## Salt Mining & Deployment Guide
 
-To deploy `GraduationShieldHook` to an address satisfying `0x2080`:
+To deploy `GraduationShieldHook` using the CREATE2 deployment pattern:
 
 ```shell
-forge script script/MineHookSalt.s.sol
+forge script script/DeployShieldHook.s.sol
 ```
 
 ### Deterministic Mining Output
 ```text
 == Logs ==
-  Mining salt for deployer: 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38
-  Required hook flags bitmask: 0x2080
-  Success! Found valid salt at iteration: 17249
-  Salt: 0x0000000000000000000000000000000000000000000000000000000000004361
-  Predicted Hook Address: 0xc954DF9744D4703985bB958c813b655e96282080
+  Mining CREATE2 salt for deployer: 0x4e59b44847b379578588920cA78FbF26c0B4956C
+  Target flags bitmask: 0x2080
+  Found salt:
+  0x0000000000000000000000000000000000000000000000000000000000002019
+  Expected hook address: 0x2b552A9287443191a4733322068e8EE11714a080
+  Successfully deployed GraduationShieldHook at: 0x2b552A9287443191a4733322068e8EE11714a080
 ```
 
 Bitmask verification:
-$$0\text{xc954DF9744D4703985bB958c813b655e96282080} \ \& \ 0\text{x3FFF} = 0\text{x2080}$$
+$$0\text{x2b552A9287443191a4733322068e8EE11714a080} \ \& \ 0\text{x3FFF} = 0\text{x2080}$$
 
 ---
 
@@ -158,9 +159,12 @@ $$0\text{xc954DF9744D4703985bB958c813b655e96282080} \ \& \ 0\text{x3FFF} = 0\tex
 │   └── base/
 │       └── BaseHook.sol           # Base contract with internal hook dispatching
 ├── script/
+│   ├── DeployShieldHook.s.sol     # CREATE2 deployment script
 │   └── MineHookSalt.s.sol         # CREATE2 address bitmask salt miner (0x2080)
 ├── test/
-│   └── GraduationShieldHook.t.sol # Unit and integration tests with Uniswap v4 test harness
+│   ├── GraduationShieldHook.t.sol # Unit and integration tests with Uniswap v4 test harness
+│   └── utils/
+│       └── HookMiner.sol          # Reusable CREATE2 hook salt mining library
 ├── foundry.toml                   # Compiler settings: solc 0.8.26, cancun EVM, via_ir enabled
 └── remappings.txt                 # Canonical dependencies: v4-core, v4-periphery, openzeppelin
 ```
