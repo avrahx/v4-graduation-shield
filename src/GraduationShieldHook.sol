@@ -1,283 +1,130 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.26;
 
-import {BaseHook} from "./base/BaseHook.sol";
-import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
-import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
-import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
-import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
-import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
-import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
-import {BeforeSwapDelta, toBeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
+import {BaseHook} from "v4-periphery/src/base/hooks/BaseHook.sol";
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+import {Hooks} from "v4-core/src/libraries/Hooks.sol";
+import {PoolKey} from "v4-core/src/types/PoolKey.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
+import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
+import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
+import {Currency} from "v4-core/src/types/Currency.sol";
 
 /// @title GraduationShieldHook
-/// @notice Uniswap v4 Hook implementing dynamic time-decay exit fees on sells with excess fee donation to active LPs.
-/// @dev Defends newly graduated bonding-curve pools against immediate liquidation dumps ("Graduation Cliff").
+/// @notice Uniswap v4 Hook that protects graduated launchpad tokens from post-migration liquidity drains.
 contract GraduationShieldHook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using LPFeeLibrary for uint24;
 
-    // --- Errors ---
-    error ExactOutputSellNotAllowedDuringCliff();
-    error InvalidFeeConfiguration();
-    error Unauthorized();
+    // --- Custom Errors ---
+    error PoolNotDynamicFee();
+    error PoolAlreadyInitialized();
+    error PoolNotShielded();
+    error TokenOrderMismatch();
 
-    // --- Events ---
-    event PoolShieldConfigured(
-        PoolId indexed poolId,
-        Currency indexed graduatedToken,
-        uint32 graduationTimestamp,
-        uint32 decayDuration,
-        uint24 initialFee,
-        uint24 baseFee
-    );
-    event ExcessFeeDonated(PoolId indexed poolId, uint256 amount0, uint256 amount1);
+    // --- State & Constants ---
+    uint24 public constant BASE_FEE = 3000;          // 0.30%
+    uint24 public constant MAX_PENALTY_FEE = 150000; // 15.00%
+    uint256 public constant DECAY_WINDOW = 7200;    // 2 Hours in seconds
 
-    // --- Configuration Struct ---
-    struct PoolConfig {
-        Currency graduatedToken;
-        uint32 graduationTimestamp;
-        uint32 decayDuration;
-        uint24 initialFee; // fee in hundredths of a bip (1,000,000 = 100%, 150,000 = 15%)
-        uint24 baseFee;    // fee in hundredths of a bip (3,000 = 0.3%)
-        bool isConfigured;
+    struct ShieldParams {
+        uint256 graduationTimestamp;
+        Currency launchpadToken; // The volatile token subject to sell penalties
+        bool active;
     }
 
-    // --- Default Constants ---
-    uint24 public constant DEFAULT_INITIAL_FEE = 150_000; // 15.00%
-    uint24 public constant DEFAULT_BASE_FEE = 3_000;       // 0.30%
-    uint32 public constant DEFAULT_DECAY_DURATION = 7 days;
-    uint24 public constant FEE_DENOMINATOR = 1_000_000;
-
-    // Transient storage slot for excess donation across beforeSwap -> afterSwap
-    bytes32 private constant EXCESS_DONATE_SLOT = keccak256("graduation.shield.excess.donate");
-
-    // Mapping of PoolId => PoolConfig
-    mapping(PoolId => PoolConfig) public poolConfigs;
+    /// @notice Tracks configuration per PoolId
+    mapping(PoolId => ShieldParams) public poolShields;
 
     constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
-    /// @inheritdoc BaseHook
+    /// @notice Specifies permissions required by this hook.
+    /// Bit flags: BEFORE_INITIALIZE (1 << 13) | BEFORE_SWAP (1 << 7)
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
-            beforeInitialize: false,
-            afterInitialize: true,
+            beforeInitialize: true,
+            afterInitialize: false,
             beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
             afterRemoveLiquidity: false,
             beforeSwap: true,
-            afterSwap: true,
+            afterSwap: false,
             beforeDonate: false,
             afterDonate: false,
-            beforeSwapReturnDelta: true,
+            beforeSwapReturnDelta: false,
             afterSwapReturnDelta: false,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
     }
 
-    // --- Pool Initialization Callback ---
-
-    /// @notice Called after pool initialization to set up graduation shield configuration
-    function afterInitialize(
+    /// @notice Pool must be initialized with LPFeeLibrary.DYNAMIC_FEE_FLAG
+    function _beforeInitialize(
         address,
         PoolKey calldata key,
-        uint160,
-        int24
-    ) external override onlyPoolManager returns (bytes4) {
-        PoolId id = key.toId();
-        if (!poolConfigs[id].isConfigured) {
-            // Default configuration: currency0 is assumed to be the graduated token if not pre-configured
-            _configurePool(
-                key,
-                key.currency0,
-                uint32(block.timestamp),
-                DEFAULT_DECAY_DURATION,
-                DEFAULT_INITIAL_FEE,
-                DEFAULT_BASE_FEE
-            );
-        }
-        return IHooks.afterInitialize.selector;
-    }
+        uint160
+    ) internal override returns (bytes4) {
+        if (!key.fee.isDynamicFee()) revert PoolNotDynamicFee();
 
-    // --- Configuration Functions ---
+        PoolId poolId = key.toId();
+        if (poolShields[poolId].active) revert PoolAlreadyInitialized();
 
-    /// @notice Configures graduation parameters for a specific pool
-    function configurePool(
-        PoolKey calldata key,
-        Currency graduatedToken,
-        uint32 graduationTimestamp,
-        uint32 decayDuration,
-        uint24 initialFee,
-        uint24 baseFee
-    ) external {
-        PoolId id = key.toId();
-        // Allow configuring if not configured yet, or called prior to graduation
-        // forge-lint: disable-next-line(block-timestamp)
-        if (poolConfigs[id].isConfigured && poolConfigs[id].graduationTimestamp <= block.timestamp) {
-            revert Unauthorized();
-        }
-        _configurePool(key, graduatedToken, graduationTimestamp, decayDuration, initialFee, baseFee);
-    }
-
-    function _configurePool(
-        PoolKey calldata key,
-        Currency graduatedToken,
-        uint32 graduationTimestamp,
-        uint32 decayDuration,
-        uint24 initialFee,
-        uint24 baseFee
-    ) internal {
-        if (baseFee > initialFee || initialFee > LPFeeLibrary.MAX_LP_FEE || decayDuration == 0) {
-            revert InvalidFeeConfiguration();
-        }
-
-        PoolId id = key.toId();
-        poolConfigs[id] = PoolConfig({
-            graduatedToken: graduatedToken,
-            graduationTimestamp: graduationTimestamp,
-            decayDuration: decayDuration,
-            initialFee: initialFee,
-            baseFee: baseFee,
-            isConfigured: true
+        // Designate currency0 as launchpad token by convention, or set dynamically
+        poolShields[poolId] = ShieldParams({
+            graduationTimestamp: block.timestamp,
+            launchpadToken: key.currency0,
+            active: true
         });
 
-        emit PoolShieldConfigured(id, graduatedToken, graduationTimestamp, decayDuration, initialFee, baseFee);
+        return this.beforeInitialize.selector;
     }
 
-    // --- Fee Inspection / Quoting ---
-
-    /// @notice Calculates the current sell fee on the graduated token
-    /// @dev Linearly decays from initialFee down to baseFee over decayDuration
-    function getSellFee(PoolKey calldata key) public view returns (uint24) {
-        PoolConfig memory config = poolConfigs[key.toId()];
-        if (!config.isConfigured) return DEFAULT_BASE_FEE;
-
-        // forge-lint: disable-next-line(block-timestamp)
-        if (block.timestamp <= config.graduationTimestamp) {
-            return config.initialFee;
-        }
-
-        uint32 elapsed = uint32(block.timestamp) - config.graduationTimestamp;
-        if (elapsed >= config.decayDuration) {
-            return config.baseFee;
-        }
-
-        uint256 feeDelta = config.initialFee - config.baseFee;
-        uint256 excess = (feeDelta * (config.decayDuration - elapsed)) / config.decayDuration;
-        // forge-lint: disable-next-line(unsafe-typecast)
-        return uint24(config.baseFee + excess);
-    }
-
-    /// @notice Returns the buy fee for the graduated token (standard base fee)
-    function getBuyFee(PoolKey calldata key) public view returns (uint24) {
-        PoolConfig memory config = poolConfigs[key.toId()];
-        return config.isConfigured ? config.baseFee : DEFAULT_BASE_FEE;
-    }
-
-    /// @notice General fee view for external integrators
-    function getFee(PoolKey calldata key, bool isSell) external view returns (uint24) {
-        return isSell ? getSellFee(key) : getBuyFee(key);
-    }
-
-    // --- Swap Callbacks ---
-
-    /// @notice Called before a swap to apply the time-decay exit fee and extract excess fee delta
-    function beforeSwap(
+    /// @notice Intercepts swaps, computes direction, and overrides pool LP fee
+    function _beforeSwap(
         address,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         bytes calldata
-    ) external override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
-        PoolId id = key.toId();
-        PoolConfig memory config = poolConfigs[id];
+    ) internal view override returns (bytes4, BeforeSwapDelta, uint24) {
+        PoolId poolId = key.toId();
+        ShieldParams memory shield = poolShields[poolId];
+        if (!shield.active) revert PoolNotShielded();
 
-        if (!config.isConfigured) {
-            return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
-        }
+        // Determine trade direction:
+        // zeroForOne = true  -> Selling currency0 for currency1
+        // zeroForOne = false -> Selling currency1 for currency0
+        bool isSellingLaunchpadToken = (shield.launchpadToken == key.currency0) 
+            ? params.zeroForOne 
+            : !params.zeroForOne;
 
-        // Determine trade direction relative to graduatedToken
-        // zeroForOne = true means currency0 is sent in, currency1 is received
-        bool isSell = (params.zeroForOne == (key.currency0 == config.graduatedToken));
+        uint24 fee = calculateDynamicFee(shield.graduationTimestamp, isSellingLaunchpadToken);
 
-        if (!isSell) {
-            // BUY: Standard base fee, zero excess fee
-            uint24 lpFeeOverride = key.fee.isDynamicFee()
-                ? (config.baseFee | LPFeeLibrary.OVERRIDE_FEE_FLAG)
-                : 0;
-            return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, lpFeeOverride);
-        }
+        // Uniswap v4 requires OVERRIDE_FEE_FLAG to replace the pool fee
+        uint24 feeWithFlag = fee | LPFeeLibrary.OVERRIDE_FEE_FLAG;
 
-        // SELL: Apply dynamic time-decay exit fee
-        uint24 currentFee = getSellFee(key);
-        uint24 excessFee = currentFee > config.baseFee ? (currentFee - config.baseFee) : 0;
-
-        if (excessFee == 0) {
-            // Post-decay: standard base fee
-            uint24 lpFeeOverride = key.fee.isDynamicFee()
-                ? (config.baseFee | LPFeeLibrary.OVERRIDE_FEE_FLAG)
-                : 0;
-            return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, lpFeeOverride);
-        }
-
-        // Active cliff period with excess exit fee:
-        // Disallow exact output sells to prevent fee evasion attacks
-        if (params.amountSpecified > 0) {
-            revert ExactOutputSellNotAllowedDuringCliff();
-        }
-
-        // Exact input sell: amountSpecified is negative
-        uint256 inputAmount = uint256(-params.amountSpecified);
-        uint256 excessAmount = (inputAmount * excessFee) / FEE_DENOMINATOR;
-
-        // Store excessAmount in transient storage for afterSwap donation
-        bytes32 slot = EXCESS_DONATE_SLOT;
-        assembly {
-            tstore(slot, excessAmount)
-        }
-
-        // Deduct excessAmount from the specified input swap amount using BeforeSwapDelta
-        // Positive specified delta credits the hook and reduces the amount going into the pool
-        // forge-lint: disable-next-line(unsafe-typecast)
-        BeforeSwapDelta returnDelta = toBeforeSwapDelta(int128(uint128(excessAmount)), 0);
-
-        uint24 feeOverride = key.fee.isDynamicFee()
-            ? (config.baseFee | LPFeeLibrary.OVERRIDE_FEE_FLAG)
-            : 0;
-
-        return (IHooks.beforeSwap.selector, returnDelta, feeOverride);
+        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeWithFlag);
     }
 
-    /// @notice Called after a swap to donate the intercepted excess fee to active in-range LPs
-    function afterSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata,
-        BalanceDelta,
-        bytes calldata
-    ) external override onlyPoolManager returns (bytes4, int128) {
-        bytes32 slot = EXCESS_DONATE_SLOT;
-        uint256 excessAmount;
-        assembly {
-            excessAmount := tload(slot)
-            tstore(slot, 0)
+    /// @notice Computes linear decay fee for sells; returns base fee for buys or post-window trades
+    function calculateDynamicFee(
+        uint256 graduationTime,
+        bool isSell
+    ) public view returns (uint24) {
+        if (!isSell) {
+            return BASE_FEE;
         }
 
-        if (excessAmount > 0) {
-            PoolConfig memory config = poolConfigs[key.toId()];
-            uint256 donate0 = (key.currency0 == config.graduatedToken) ? excessAmount : 0;
-            uint256 donate1 = (key.currency1 == config.graduatedToken) ? excessAmount : 0;
-
-            // Donate intercepted tokens to in-range liquidity providers
-            // This strengthens pool reserves, directly increasing LP feeGrowthGlobal
-            poolManager.donate(key, donate0, donate1, "");
-
-            emit ExcessFeeDonated(key.toId(), donate0, donate1);
+        uint256 timeElapsed = block.timestamp - graduationTime;
+        if (timeElapsed >= DECAY_WINDOW) {
+            return BASE_FEE;
         }
 
-        return (IHooks.afterSwap.selector, 0);
+        // Linear interpolation formula:
+        // Fee(t) = MAX_FEE - (elapsed * (MAX_FEE - BASE_FEE)) / DECAY_WINDOW
+        uint256 decayAmount = (timeElapsed * (MAX_PENALTY_FEE - BASE_FEE)) / DECAY_WINDOW;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint24(MAX_PENALTY_FEE - decayAmount);
     }
 }

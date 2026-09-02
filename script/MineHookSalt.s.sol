@@ -2,24 +2,20 @@
 pragma solidity 0.8.26;
 
 import {Script, console2} from "forge-std/Script.sol";
-import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
+import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {GraduationShieldHook} from "../src/GraduationShieldHook.sol";
 
 /// @title MineHookSalt
-/// @notice Mines CREATE2 salt for deploying GraduationShieldHook with the exact bitmask required by Uniswap v4
+/// @notice Mines CREATE2 salt for deploying GraduationShieldHook with BEFORE_INITIALIZE | BEFORE_SWAP
 contract MineHookSalt is Script {
     // Required flag combination:
-    // AFTER_INITIALIZE_FLAG (1 << 12) = 0x1000
+    // BEFORE_INITIALIZE_FLAG (1 << 13) = 0x2000
     // BEFORE_SWAP_FLAG (1 << 7)       = 0x0080
-    // AFTER_SWAP_FLAG (1 << 6)        = 0x0040
-    // BEFORE_SWAP_RETURNS_DELTA (1 << 3) = 0x0008
-    // Total bitmask = 0x10C8
+    // Total bitmask = 0x2080
     uint160 public constant REQUIRED_FLAGS =
-        Hooks.AFTER_INITIALIZE_FLAG |
-        Hooks.BEFORE_SWAP_FLAG |
-        Hooks.AFTER_SWAP_FLAG |
-        Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG;
+        Hooks.BEFORE_INITIALIZE_FLAG |
+        Hooks.BEFORE_SWAP_FLAG;
 
     function run() external view returns (bytes32 salt, address predictedAddress) {
         address deployer = msg.sender;
@@ -35,7 +31,7 @@ contract MineHookSalt is Script {
         bytes32 initCodeHash = keccak256(abi.encodePacked(creationCode, constructorArgs));
 
         console2.log("Mining salt for deployer:", deployer);
-        console2.log("Required hook flags bitmask: 0x10C8");
+        console2.log("Required hook flags bitmask: 0x2080");
 
         for (uint256 i = 0; i < 300_000; i++) {
             bytes32 testSalt = bytes32(i);
