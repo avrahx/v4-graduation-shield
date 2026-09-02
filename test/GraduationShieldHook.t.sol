@@ -244,4 +244,61 @@ contract GraduationShieldHookTest is Test, Deployers {
         assertEq(delta.amount0(), -1 ether, "Seller gave 1 ether");
         assertTrue(delta.amount1() > 0, "Seller received reserve tokens");
     }
+
+    // --- Verification Matrix Tests ---
+
+    function test_InitialSellFeeIsMax() public view {
+        uint24 fee = hook.calculateDynamicFee(block.timestamp, true);
+        assertEq(fee, 150_000, "Sell fee at t = t_grad evaluates strictly to 15.00%");
+    }
+
+    function test_BuyFeeIsAlwaysBaseFee() public view {
+        uint24 fee = hook.calculateDynamicFee(block.timestamp, false);
+        assertEq(fee, 3_000, "Buys pay strictly 0.30%, never incurring dumper penalties");
+    }
+
+    function test_SellFeeMidwayDecay() public {
+        uint256 t0 = 100_000;
+        vm.warp(t0 + 3600);
+        uint24 fee = hook.calculateDynamicFee(t0, true);
+        assertEq(fee, 76_500, "Validates linear decay calculation halfway through window (t = 3600 s)");
+    }
+
+    function test_SellFeeClampsToBaseFee() public {
+        uint256 t0 = 100_000;
+        vm.warp(t0 + 7200);
+        assertEq(hook.calculateDynamicFee(t0, true), 3_000, "Asserts fee reverts to baseline 0.30% at t = 7200 s");
+
+        vm.warp(t0 + 15_000);
+        assertEq(hook.calculateDynamicFee(t0, true), 3_000, "Asserts fee reverts to baseline 0.30% once t >= 7200 s");
+    }
+
+    function testFuzz_FeeMonotonicDecay(uint32 delta1, uint32 delta2) public {
+        uint256 t0 = 10_000_000;
+        uint256 t1 = t0 + uint256(delta1 % 100_000);
+        uint256 t2 = t0 + uint256(delta2 % 100_000);
+
+        if (t1 > t2) {
+            (t1, t2) = (t2, t1);
+        }
+
+        vm.warp(t1);
+        uint24 fee1 = hook.calculateDynamicFee(t0, true);
+
+        vm.warp(t2);
+        uint24 fee2 = hook.calculateDynamicFee(t0, true);
+
+        assertTrue(fee1 >= fee2, "Mathematical proof: For all t1 < t2, Fee(t1) >= Fee(t2)");
+    }
+
+    function testFuzz_CalculateFeeBoundaries(uint32 elapsed, bool isSell) public {
+        uint256 t0 = 10_000_000;
+        vm.warp(t0 + uint256(elapsed));
+
+        uint24 fee = hook.calculateDynamicFee(t0, isSell);
+        assertTrue(
+            fee >= hook.BASE_FEE() && fee <= hook.MAX_PENALTY_FEE(),
+            "Asserts fee is strictly bounded: BASE_FEE <= Fee(t) <= MAX_FEE"
+        );
+    }
 }
