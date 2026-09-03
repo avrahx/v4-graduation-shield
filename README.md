@@ -56,17 +56,31 @@ Where:
                  |          PoolManager.sol (Uniswap v4)        |
                  +----------------------+-----------------------+
                                         |
-                                        v
-                       1. beforeSwap Hook Callback
+                 +----------------------+-----------------------+
+                 | 1. beforeSwap Hook Callback                  |
+                 v                                              |
++-------------------------------------------------------------+ |
+|                  GraduationShieldHook.sol                   | |
+|                                                             | |
+| 1. Identify trade direction (zeroForOne)                    | |
+| 2. Compute elapsed delta_t = now - t_grad                   | |
+| 3. If Buy: return BASE_FEE (0.30%)                          | |
+| 4. If Sell: compute decay fee (15% -> 0.3%)                 | |
+| 5. Record PenaltyDelta = CurrentDynamicFee - BASE_FEE       | |
+| 6. Return fee | LPFeeLibrary.OVERRIDE_FLAG                  | |
++-------------------------------------------------------------+ |
+                                                                |
                  +----------------------------------------------+
-                 |          GraduationShieldHook.sol            |
-                 |                                              |
-                 | 1. Identify trade direction (zeroForOne)     |
-                 | 2. Compute elapsed delta_t = now - t_grad    |
-                 | 3. If Buy: return BASE_FEE (0.30%)           |
-                 | 4. If Sell: compute decay fee (15% -> 0.3%)  |
-                 | 5. Return fee | LPFeeLibrary.OVERRIDE_FLAG   |
-                 +----------------------------------------------+
+                 | 2. afterSwap Hook Callback (LP Value Recapture)
+                 v
++-------------------------------------------------------------+
+|                  GraduationShieldHook.sol                   |
+|                                                             |
+| 1. Check if PenaltyDelta > 0                                |
+| 2. Calculate penaltyProceeds from swapped input tokens      |
+| 3. Route token proceeds to in-range LPs via donate()        |
+| 4. Settle donation delta with PoolManager                   |
++-------------------------------------------------------------+
 ```
 
 ---
@@ -74,10 +88,13 @@ Where:
 ## Contract Addresses & Bitmask Specification
 
 Uniswap v4 enforces hook permissions via the leading bits of the deployed hook address. `GraduationShieldHook` requires:
-* `Hooks.BEFORE_INITIALIZE_FLAG` (`1 << 13`)
-* `Hooks.BEFORE_SWAP_FLAG` (`1 << 7`)
+* `Hooks.BEFORE_INITIALIZE_FLAG` (`1 << 13` = `0x2000`)
+* `Hooks.BEFORE_SWAP_FLAG` (`1 << 7` = `0x0080`)
+* `Hooks.AFTER_SWAP_FLAG` (`1 << 6` = `0x0040`)
 
-The project includes an optimized `HookMiner.sol` library that brute-forces `CREATE2` salts until an address matches the target flag bitmask `(1 << 13) | (1 << 7)`.
+Total required bitmask: `(1 << 13) | (1 << 7) | (1 << 6) = 0x20C0`.
+
+The project includes an optimized `HookMiner.sol` library that brute-forces `CREATE2` salts until an address matches the target flag bitmask `0x20C0`.
 
 ---
 
@@ -125,6 +142,7 @@ forge script script/SimulateDrain.s.sol
 | `test_BuyFeeIsAlwaysBaseFee` | Unit | Buys pay strictly 0.30%, never incurring dumper penalties. |
 | `test_SellFeeMidwayDecay` | Integration | Validates linear decay calculation halfway through window (t = 3600 s). |
 | `test_SellFeeClampsToBaseFee` | Integration | Asserts fee reverts to baseline 0.30% once t >= 7200 s. |
+| `test_ActiveLPValueRecapture_DonationIncreasesFeeGrowth` | Integration | Verifies that proceeds from PenaltyDelta are donated via afterSwap, increasing feeGrowthGlobal. |
 | `testFuzz_FeeMonotonicDecay` | Fuzz | Mathematical proof: For all t1 < t2, Fee(t1) >= Fee(t2). |
 | `testFuzz_CalculateFeeBoundaries` | Fuzz | Asserts fee is strictly bounded: BASE_FEE <= Fee(t) <= MAX_FEE. |
 
@@ -151,8 +169,8 @@ forge script script/DeployShieldHook.s.sol:DeployShieldHook \
 │   └── base/
 │       └── BaseHook.sol           # Base contract with internal hook dispatching
 ├── script/
-│   ├── DeployShieldHook.s.sol     # CREATE2 deployment script
-│   ├── MineHookSalt.s.sol         # CREATE2 address bitmask salt miner (0x2080)
+│   ├── DeployShieldHook.s.sol     # CREATE2 deployment script (0x20C0)
+│   ├── MineHookSalt.s.sol         # CREATE2 address bitmask salt miner (0x20C0)
 │   └── SimulateDrain.s.sol        # Comparative benchmark drain simulation script
 ├── test/
 │   ├── GraduationShieldHook.t.sol # Unit, integration, and fuzz tests with Uniswap v4 harness

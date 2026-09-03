@@ -8,13 +8,14 @@ import {GraduationShieldHook} from "../src/GraduationShieldHook.sol";
 import {HookMiner} from "../test/utils/HookMiner.sol";
 
 /// @title DeployShieldHook
-/// @notice Script implementing CREATE2 deployment for GraduationShieldHook matching 0x2080 flags
+/// @notice Script implementing CREATE2 deployment for GraduationShieldHook matching 0x20C0 flags
 contract DeployShieldHook is Script {
     // Canonical Foundry CREATE2 Deterministic Deployment Proxy
     address internal constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
-    // Target flags: BEFORE_INITIALIZE (1 << 13) | BEFORE_SWAP (1 << 7) = 0x2080
-    uint160 public constant TARGET_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG;
+    // Target flags: BEFORE_INITIALIZE (1 << 13) | BEFORE_SWAP (1 << 7) | AFTER_SWAP (1 << 6) = 0x20C0
+    uint160 public constant TARGET_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG
+        | Hooks.AFTER_SWAP_FLAG;
 
     function run() external returns (GraduationShieldHook hook) {
         address manager = vm.envOr("POOL_MANAGER", address(0x0000000000000000000000000000000000000001));
@@ -23,7 +24,7 @@ contract DeployShieldHook is Script {
         bytes memory constructorArgs = abi.encode(IPoolManager(manager));
 
         console2.log("Mining CREATE2 salt for deployer:", CREATE2_DEPLOYER);
-        console2.log("Target flags bitmask: 0x2080");
+        console2.log("Target flags bitmask: 0x20C0");
 
         (address expectedAddress, bytes32 salt) =
             HookMiner.find(CREATE2_DEPLOYER, TARGET_FLAGS, creationCode, constructorArgs);

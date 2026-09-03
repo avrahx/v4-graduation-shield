@@ -10,7 +10,7 @@ library HookMiner {
 
     /// @notice Mines a salt that produces a hook address matching the target flags
     /// @param deployer The address that will deploy the contract via CREATE2
-    /// @param flags The required hook flag bitmask (e.g. Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG)
+    /// @param flags The required hook flag bitmask (e.g. Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG)
     /// @param creationCode The creation bytecode of the hook contract
     /// @param constructorArgs The ABI-encoded constructor arguments
     /// @return hookAddress The mined hook address matching the required flags

@@ -47,12 +47,13 @@ contract GraduationShieldHookTest is Deployers {
         // 3. Deploy GraduationShieldHook at valid bitmask address:
         // BEFORE_INITIALIZE_FLAG (1 << 13) = 0x2000
         // BEFORE_SWAP_FLAG (1 << 7)       = 0x0080
-        // Total bitmask = 0x2080
-        uint160 flags = uint160(Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG);
+        // AFTER_SWAP_FLAG (1 << 6)        = 0x0040
+        // Total bitmask = 0x20C0
+        uint160 flags = uint160(Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
 
         deployCodeTo("GraduationShieldHook.sol:GraduationShieldHook", abi.encode(manager), hookAddress);
-        hook = GraduationShieldHook(hookAddress);
+        hook = GraduationShieldHook(payable(hookAddress));
 
         // 4. Initialize pool with dynamic fee flag
         (poolKey, poolId) = initPool(currency0, currency1, hook, LPFeeLibrary.DYNAMIC_FEE_FLAG, SQRT_PRICE_1_1);
@@ -79,20 +80,20 @@ contract GraduationShieldHookTest is Deployers {
         Hooks.Permissions memory permissions = hook.getHookPermissions();
         assertTrue(permissions.beforeInitialize, "beforeInitialize should be true");
         assertTrue(permissions.beforeSwap, "beforeSwap should be true");
+        assertTrue(permissions.afterSwap, "afterSwap should be true");
 
         assertFalse(permissions.afterInitialize, "afterInitialize should be false");
         assertFalse(permissions.beforeAddLiquidity, "beforeAddLiquidity should be false");
         assertFalse(permissions.afterAddLiquidity, "afterAddLiquidity should be false");
         assertFalse(permissions.beforeRemoveLiquidity, "beforeRemoveLiquidity should be false");
         assertFalse(permissions.afterRemoveLiquidity, "afterRemoveLiquidity should be false");
-        assertFalse(permissions.afterSwap, "afterSwap should be false");
         assertFalse(permissions.beforeDonate, "beforeDonate should be false");
         assertFalse(permissions.afterDonate, "afterDonate should be false");
         assertFalse(permissions.beforeSwapReturnDelta, "beforeSwapReturnDelta should be false");
         assertFalse(permissions.afterSwapReturnDelta, "afterSwapReturnDelta should be false");
 
         // Verify address satisfies ALL_HOOK_MASK strictly
-        assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, 0x2080, "Hook address bitmask mismatch");
+        assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, 0x20C0, "Hook address bitmask mismatch");
     }
 
     // --- Test 2: Pool Initialization ---
@@ -272,6 +273,48 @@ contract GraduationShieldHookTest is Deployers {
         assertTrue(
             fee >= hook.BASE_FEE() && fee <= hook.MAX_PENALTY_FEE(),
             "Asserts fee is strictly bounded: BASE_FEE <= Fee(t) <= MAX_FEE"
+        );
+    }
+
+    // --- Test: Active LP Value Recapture via afterSwap donate() ---
+
+    function test_ActiveLPValueRecapture_DonationIncreasesFeeGrowth() public {
+        // 1. Pre-fund the hook with launchpad tokens to model value recapture reserve
+        uint256 hookFundAmount = 1_000 ether;
+        MockERC20(Currency.unwrap(launchpadToken)).mint(address(hook), hookFundAmount);
+        assertEq(launchpadToken.balanceOf(address(hook)), hookFundAmount, "Hook should hold launchpad tokens");
+
+        // 2. Read baseline feeGrowthGlobal before penalized sell
+        (uint256 feeGrowth0Before,) = manager.getFeeGrowthGlobals(poolId);
+
+        // 3. Execute penalized sell of launchpad token at t = 0 (cliff penalty: 15.00%, penalty delta: 14.70%)
+        uint256 sellAmount = 10 ether;
+        MockERC20(Currency.unwrap(launchpadToken)).mint(address(this), sellAmount);
+        MockERC20(Currency.unwrap(launchpadToken)).approve(address(swapRouter), sellAmount);
+
+        swapRouter.swap(
+            poolKey,
+            IPoolManager.SwapParams({
+                zeroForOne: true, amountSpecified: -int256(sellAmount), sqrtPriceLimitX96: MIN_PRICE_LIMIT
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            ZERO_BYTES
+        );
+
+        // 4. Verify that feeGrowthGlobal0 increased as proceeds from penaltyDelta were donated back to active LPs
+        (uint256 feeGrowth0After,) = manager.getFeeGrowthGlobals(poolId);
+        assertTrue(
+            feeGrowth0After > feeGrowth0Before, "Active LP feeGrowthGlobal0 must increase following a penalized sell"
+        );
+        uint256 feeGrowthDiff = feeGrowth0After - feeGrowth0Before;
+        assertGt(feeGrowthDiff, 0, "Active LPs recaptured value from dump penalty via donate()");
+
+        // 5. Verify that hook balance decreased by the donated penalty proceeds
+        uint256 expectedDonation = (sellAmount * (150000 - 3000)) / 1_000_000; // 1.47 ether
+        assertEq(
+            launchpadToken.balanceOf(address(hook)),
+            hookFundAmount - expectedDonation,
+            "Hook token balance should be reduced by exact donated proceeds"
         );
     }
 }

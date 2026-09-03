@@ -7,13 +7,15 @@ import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {GraduationShieldHook} from "../src/GraduationShieldHook.sol";
 
 /// @title MineHookSalt
-/// @notice Mines CREATE2 salt for deploying GraduationShieldHook with BEFORE_INITIALIZE | BEFORE_SWAP
+/// @notice Mines CREATE2 salt for deploying GraduationShieldHook with BEFORE_INITIALIZE | BEFORE_SWAP | AFTER_SWAP
 contract MineHookSalt is Script {
     // Required flag combination:
     // BEFORE_INITIALIZE_FLAG (1 << 13) = 0x2000
     // BEFORE_SWAP_FLAG (1 << 7)       = 0x0080
-    // Total bitmask = 0x2080
-    uint160 public constant REQUIRED_FLAGS = Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG;
+    // AFTER_SWAP_FLAG (1 << 6)        = 0x0040
+    // Total bitmask = 0x20C0
+    uint160 public constant REQUIRED_FLAGS =
+        Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG;
 
     function run() external view returns (bytes32 salt, address predictedAddress) {
         address deployer = msg.sender;
